@@ -6,10 +6,13 @@ import torch.nn.functional as F
 import torch
 from datetime import datetime
 import streamlit as st
-from streamlit.components.v1 import html as components_html
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from groq import Groq
+from dotenv import load_dotenv
+from pathlib import Path
+
+load_dotenv()
 
 
 st.set_page_config(page_title="Ruang Aman - Konseling Hukum UU TPKS",
@@ -34,7 +37,16 @@ def load_emotion_model():
     mdl = AutoModelForSequenceClassification.from_pretrained("./emotion_model_final")
     mdl.eval()
     return tok, mdl
+model_path = Path("./emotion_model_final/model.safetensors")
 
+print("=" * 50)
+print("MODEL EXISTS :", model_path.exists())
+print("MODEL SIZE   :", model_path.stat().st_size)
+
+with open(model_path, "rb") as f:
+    print(f.read(80))
+
+print("=" * 50)
 emotion_tokenizer, emotion_model = load_emotion_model()
 
 def detect_emotion(text: str) -> dict:
@@ -154,7 +166,6 @@ LOGO_SVG = """<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000
     <path d="M3.5 15c-.6 1.6-.2 3 1 3.9M20.5 15c.6 1.6.2 3-1 3.9"
           stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
 </svg>"""
-
 
 def inject_css(t):
     st.markdown(f"""
@@ -544,6 +555,88 @@ def inject_css(t):
     .st-key-chip_row div.stButton > button:hover p {{ color:#fff !important; }}
 
     /* ============================================================ */
+    /* MIC — st.audio_input diposisikan absolute di dalam chat input */
+    /* ============================================================ */
+    div[data-testid="stBottomBlockContainer"] {{
+        position: relative !important;
+        padding-left: 10px !important;
+        padding-right: 10px !important;
+    }}
+    /* Sembunyikan semua anak audio_input — nanti tombol ditampilkan ulang */
+    div[data-testid="stAudioInput"] {{
+        position: absolute !important;
+        right: 44px !important;
+        bottom: 6px !important;
+        width: 30px !important;
+        height: 30px !important;
+        z-index: 999 !important;
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }}
+    div[data-testid="stAudioInput"] * {{
+        display: none !important;
+    }}
+    /* Tampilkan hanya tombol (record/stop) */
+    div[data-testid="stAudioInput"] button {{
+        display: flex !important;
+        width: 28px !important; height: 28px !important;
+        border-radius: 50% !important;
+        background: transparent !important;
+        border: none !important;
+        color: #666 !important;
+        font-size: 18px !important;
+        cursor: pointer !important;
+        align-items: center !important;
+        justify-content: center !important;
+        padding: 0 !important;
+        transition: all 0.2s ease !important;
+        position: relative !important;
+    }}
+    div[data-testid="stAudioInput"] button:hover {{
+        background: rgba(0,0,0,0.06) !important;
+        color: #000 !important;
+    }}
+    /* State recording (di-toggle JS via class pada parent) */
+    div[data-testid="stAudioInput"].mic-recording button {{
+        color: #e74c3c !important;
+        animation: mic-pulse 1.2s ease-in-out infinite !important;
+    }}
+    div[data-testid="stAudioInput"].mic-recording button::after {{
+        content: '';
+        position: absolute;
+        inset: -4px;
+        border-radius: 50%;
+        animation: mic-ring 1.2s ease-in-out infinite;
+        display: block !important;
+    }}
+    div[data-testid="stAudioInput"].mic-processing button {{
+        color: #f39c12 !important;
+        animation: mic-spin 0.8s linear infinite !important;
+    }}
+    @keyframes mic-pulse {{
+        0% {{ transform:scale(1); }}
+        50% {{ transform:scale(1.08); }}
+        100% {{ transform:scale(1); }}
+    }}
+    @keyframes mic-ring {{
+        0% {{ box-shadow:0 0 0 0 rgba(231,76,60,0.4); }}
+        70% {{ box-shadow:0 0 0 8px rgba(231,76,60,0); }}
+        100% {{ box-shadow:0 0 0 0 rgba(231,76,60,0); }}
+    }}
+    @keyframes mic-spin {{
+        from {{ transform:rotate(0deg); }}
+        to {{ transform:rotate(360deg); }}
+    }}
+    /* Feedback state pada chat input saat recording */
+    [data-testid="stChatInput"].mic-recording {{
+        border-color: #e74c3c !important;
+        box-shadow: 0 0 0 3px rgba(231,76,60,0.15) !important;
+    }}
+
+    /* ============================================================ */
     /* INPUT CHAT — dibangun ulang total (versi lama punya bug:      */
     /* kotak persegi mengintip di belakang tombol bulat, dan cursor  */
     /* berubah jadi ikon "dilarang" / lingkaran merah saat hover).   */
@@ -565,8 +658,8 @@ def inject_css(t):
 
     div[data-testid="stBottomBlockContainer"] {{
         max-width: 100% !important;
-        padding-left: 30px !important;
-        padding-right: 30px !important;
+        padding-left: 10px !important;
+        padding-right: 10px !important;
         background: {t['deep']} !important;
     }}
 
@@ -592,18 +685,22 @@ def inject_css(t):
         box-shadow: 0 0 0 3px rgba(241, 145, 109, 0.2) !important;
     }}
 
-    /* 1. Wrapper langsung di sekitar tombol kirim — ini sumber "kotak"
-          yang muncul di belakang lingkaran, karena wrapper bawaan
-          Streamlit punya background/hover sendiri yang persegi.
-          Dipaksa transparan + ikut bentuk bulat + overflow hidden. */
-    [data-testid="stChatInput"] div:has(> button[data-testid="stChatInputSubmitButton"]) {{
+    /* 1. Wrapper di sekitar tombol kirim — pakai flush ke semua level
+          div di dalam stChatInput agar tidak ada bg/kotak sisa yang
+          mengintip di belakang lingkaran. Ini jauh lebih robust tanpa
+          :has() yang rentan mismatch antar versi browser/Streamlit. */
+    [data-testid="stChatInput"] > div,
+    [data-testid="stChatInput"] > div > div,
+    [data-testid="stChatInput"] > div > div > div,
+    [data-testid="stChatInput"] > div > div > div > div {{
         background: transparent !important;
         border: none !important;
         box-shadow: none !important;
-        border-radius: 50% !important;
-        overflow: hidden !important;
-        padding: 0 !important;
-        margin: 0 4px !important;
+    }}
+    /* Kembalikan background container utama agar tetap terlihat */
+    [data-testid="stChatInput"] {{
+        background: rgba(255, 255, 255, 0.96) !important;
+        border: 1.5px solid {t['skyblue']} !important;
     }}
 
     /* 2. Tombol bulat itu sendiri */
@@ -866,6 +963,17 @@ def groq_answer(api_key, user_input, history, mode, support_info):
             continue
 
     yield "\u26a0\ufe0f Groq sedang limit. Coba lagi beberapa saat lagi.\n\nKalau mendesak, hubungi **SAPA 129**."
+def transcribe_audio(audio_bytes_io, groq_client, model_name="whisper-large-v3-turbo"):
+    """Kirim audio ke Groq Whisper, kembalikan teks hasil transkripsi (Bahasa Indonesia)."""
+    audio_bytes_io.seek(0)
+    transcription = groq_client.audio.transcriptions.create(
+        file=("input.wav", audio_bytes_io.read()),
+        model=model_name,
+        language="id",          # paksa Bahasa Indonesia, lebih akurat & lebih cepat
+        response_format="text",
+        temperature=0.0,
+    )
+    return transcription.strip() if isinstance(transcription, str) else transcription.text.strip()
 
 def _pdf_sanitize(text):
     replacements = {
@@ -930,7 +1038,8 @@ def build_transcript_pdf():
         pdf.set_x(pdf.l_margin)
         pdf.multi_cell(0, 5, _pdf_sanitize(line))
 
-    return bytes(pdf.output())
+    out = pdf.output()
+    return out.encode("latin-1") if isinstance(out, str) else bytes(out)
 
 for k, v in [("messages", []), ("active_menu", "konseling"), ("pending", None), ("text_size", "Sedang"), ("last_emotion_result", None)]:
     if k not in st.session_state: st.session_state[k] = v
@@ -1131,6 +1240,8 @@ with st.sidebar:
     st.markdown('<div class="disclaimer">Ruang Aman memberi informasi berbasis UU No. 12 Tahun 2022. '
                 'Bukan pengganti advokat/lembaga resmi. Darurat? <b>SAPA 129</b>.</div>', unsafe_allow_html=True)
 
+groq_client = Groq(api_key=api_key) if api_key else None
+
 mode_key = st.session_state.active_menu
 
 # ===================== HEADER UTAMA — PERMANEN: Logo / Ruang Aman / Sub-judul =====================
@@ -1173,7 +1284,94 @@ with chip_container:
             if st.button(label, key=f"chip_{i}", use_container_width=True):
                 st.session_state.pending = prompt; st.rerun()
 
+# ===================== AUDIO INPUT (inline mic) + CHAT INPUT =====================
+audio_value = st.audio_input("🎤", label_visibility="collapsed", key="voice_main")
+
+# JS injection untuk deteksi state recording & auto-submit via invisible iframe
+components_html("""<script>
+(function(){
+  var pd=window.parent.document;
+  var placeholder='Tuliskan pesanmu di sini...';
+  function ai(){ return pd.querySelector('[data-testid="stAudioInput"]'); }
+  function ci(){ return pd.querySelector('[data-testid="stChatInput"]'); }
+  function setState(s){
+    var a=ai();
+    if(!a) return;
+    a.classList.remove('mic-recording','mic-processing');
+    if(s) a.classList.add(s);
+  }
+  function setPH(t){
+    var inp=pd.querySelector('[data-testid="stChatInput"] textarea');
+    if(inp) inp.placeholder=t||placeholder;
+  }
+  function autoSubmit(){
+    var a=ai();
+    if(!a) return;
+    // Cari tombol submit (muncul setelah recording selesai)
+    var btns=a.querySelectorAll('button');
+    for(var i=0;i<btns.length;i++){
+      var b=btns[i];
+      // Submit button biasanya yg terakhir setelah audio player
+      if(b.offsetHeight>0&&b.offsetWidth>0&&!b.querySelector('svg[viewBox]')){
+        b.click();
+        setState('mic-processing');
+        setPH('Memproses suara...');
+        return;
+      }
+    }
+    // Fallback: klik semua button yg visible
+    for(var i=0;i<btns.length;i++){
+      if(btns[i].offsetHeight>0&&btns[i].offsetWidth>0){
+        btns[i].click();
+        setState('mic-processing');
+        setPH('Memproses suara...');
+        return;
+      }
+    }
+  }
+  var obs=new MutationObserver(function(){
+    var a=ai();
+    if(!a) return;
+    // Deteksi recording: ada canvas (waveform) atau tombol stop
+    var rec=a.querySelector('canvas');
+    // Deteksi selesai recording: ada elemen audio
+    var done=a.querySelector('audio');
+    if(rec){
+      setState('mic-recording');
+      setPH('Mendengarkan\u2026');
+    }else if(done){
+      // Auto-submit setelah recording selesai
+      autoSubmit();
+    }else{
+      setState('');
+      setPH(placeholder);
+    }
+  });
+  obs.observe(pd.body,{childList:true,subtree:true,attributes:true});
+})();
+</script>""", height=0)
+
 user_input = st.chat_input("Tuliskan pesanmu di sini...")
+
+# Transkripsi audio (otomatis kalau ada rekaman baru)
+if audio_value is not None:
+    audio_bytes = audio_value.read()
+    audio_value.seek(0)
+    last = st.session_state.get("last_audio_bytes")
+    if last != audio_bytes:
+        st.session_state.last_audio_bytes = audio_bytes
+        with st.spinner("Mentranskripsi suara..."):
+            try:
+                if not groq_client:
+                    st.warning("🔑 GROQ_API_KEY belum diatur — transkripsi audio tidak tersedia.")
+                else:
+                    hasil_teks = transcribe_audio(audio_value, groq_client)
+                    user_input = hasil_teks
+            except Exception as e:
+                st.warning(f"Gagal mentranskripsi audio: {e}")
+else:
+    st.session_state.last_audio_bytes = None
+
 if st.session_state.pending and not user_input:
     user_input = st.session_state.pending; st.session_state.pending = None
 
