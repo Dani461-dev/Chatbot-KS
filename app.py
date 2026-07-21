@@ -27,7 +27,6 @@ embed_model = load_embed()
 index, chunks = load_store()
 
 EMOTION_MODEL_REPO = "Chatbot-123/Chatbot-KS"
-
 @st.cache_resource
 def load_emotion_model():
     tok = AutoTokenizer.from_pretrained(EMOTION_MODEL_REPO)
@@ -35,13 +34,12 @@ def load_emotion_model():
     mdl.eval()
     return tok, mdl
 
-emotion_tokenizer, emotion_model = load_emotion_model()
-
 def detect_emotion(text: str) -> dict:
-    inputs = emotion_tokenizer(text, return_tensors="pt", truncation=True, max_length=64)
+    tokenizer, model = load_emotion_model()
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=64)
     with torch.no_grad():
-        probs = F.softmax(emotion_model(**inputs).logits, dim=-1)[0]
-    id2label_local = emotion_model.config.id2label
+        probs = F.softmax(model(**inputs).logits, dim=-1)[0]
+    id2label_local = model.config.id2label
     scores = {id2label_local[i]: float(probs[i]) for i in range(len(probs))}
     dominant = max(scores, key=scores.get)
     return {"label_dominan": dominant, "confidence": scores[dominant], "semua_skor": scores}
