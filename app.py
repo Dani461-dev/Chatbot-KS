@@ -12,6 +12,133 @@ from groq import Groq
 st.set_page_config(page_title="Ruang Aman - Konseling Hukum UU TPKS",
                    page_icon="\U0001f49b", layout="wide",
                    initial_sidebar_state="expanded")
+
+@st.cache_resource
+def load_embed(): return SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+@st.cache_resource
+def load_store():
+    return faiss.read_index("faiss_index.index"), pickle.load(open("chunks.pkl","rb"))
+
+FALLBACK_SUPPORT_SENTENCE = {
+    "sadness": "Aku di sini mendengarkanmu. Ceritakan saja semuanya, ya.",
+    "fear": "Kamu aman di sini. Tarik napas dalam-dalam, kita lalui bersama.",
+    "anger": "Wajar kok kalau kamu kesal. Yuk, rehat sejenak dan tenangin pikiran.",
+    "happy": "Ikut senang mendengarnya! Cerita seru apa lagi nih?",
+    "love": "Terima kasih ya sudah berbagi energi positif. Kamu berharga!",
+}
+
+def analyze_emotion_and_support(text: str, api_key: str) -> dict:
+    """1 Groq call yang sekaligus: (1) klasifikasi emosi 5 kelas, dan
+    (2) bikin 1 kalimat support dinamis berdasarkan emosi dominan itu sendiri.
+    Menggantikan 2 call terpisah (detect_emotion + generate_ai_support_label)."""
+    labels = ["sadness", "fear", "anger", "happy", "love"]
+    default_scores = {l: 0.0 for l in labels}
+    default_fallback = "Siap membantu dan mendengarkan ceritamu."
+    if not api_key:
+        return {"label_dominan": "sadness", "confidence": 0.0, "semua_skor": default_scores, "ai_label": default_fallback}
+    system_prompt = (
+        "Kamu adalah asisten yang menganalisis emosi teks Bahasa Indonesia SEKALIGUS "
+        "membuat 1 kalimat respons suportif singkat, dalam satu langkah.\n\n"
+        "LANGKAH 1 - KLASIFIKASI EMOSI:\n"
+        "Klasifikasikan pesan user ke 5 emosi: sadness, fear, anger, happy, love. "
+        "Beri skor keyakinan 0-1 untuk masing-masing (total sekitar 1.0).\n\n"
+        "LANGKAH 2 - KALIMAT SUPPORT (berdasarkan emosi dominan hasil Langkah 1):\n"
+        "- sadness: 1 kalimat sangat lembut, empati mendalam, tunjukkan kamu ada untuknya.\n"
+        "- fear: 1 kalimat menenangkan, berikan kepastian dia aman bercerita di sini.\n"
+        "- anger: 1 kalimat validasi yang adem, turunkan tensi tanpa menghakimi.\n"
+        "- happy: 1 kalimat ikut senang, antusias, apresiasi energi positifnya.\n"
+        "- love: 1 kalimat apresiasi hangat atas kasih sayang/cerita indahnya.\n\n"
+        "ATURAN KALIMAT SUPPORT:\n"
+        "- Maksimal 12-15 kata.\n"
+        "- Bahasa Indonesia santai/kasual, natural seperti teman dekat (jangan kaku/formal).\n"
+        "- DILARANG pakai tanda kutip atau kalimat pengantar seperti 'Ini kalimatnya:'.\n\n"
+        "Balas HANYA dengan JSON valid tanpa teks/markdown lain, format PERSIS:\n"
+        '{"sadness": 0.0, "fear": 0.0, "anger": 0.0, "happy": 0.0, "love": 0.0, "support_sentence": "..."}'
+    )
+    try:
+        client = Groq(api_key=api_key)
+        completion = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text},
+            ],
+            temperature=0.7,
+            max_tokens=150,
+        )
+        raw = completion.choices[0].message.content.strip()
+        raw = raw.replace("```json", "").replace("```", "").strip()
+        data = json.loads(raw)
+        scores = {l: float(data.get(l, 0.0)) for l in labels}
+        dominant = max(scores, key=scores.get)
+        support_sentence = str(data.get("support_sentence", "")).strip()
+        if not support_sentence:
+            support_sentence = FALLBACK_SUPPORT_SENTENCE.get(dominant, default_fallback)
+        return {"label_dominan": dominant, "confidence": scores[dominant], "semua_skor": scores, "ai_label": support_sentence}
+    except Exception:
+        return {"label_dominan": "sadness", "confidence": 0.0, "semua_skor": default_scores,
+                 "ai_label": FALLBACK_SUPPORT_SENTENCE["sadness"]}
+
+
+DISTRESS_MAP = {
+    "sadness": "tinggi",
+    "fear": "tinggi",
+    "anger": "sedang",
+    "happy": "rendah",
+    "love": "rendah",
+}
+
+def get_support_flag(text: str, api_key: str, threshold: float = 0.5, sadness_safety_threshold: float = 0.30) -> dict:
+    r = analyze_emotion_and_support(text, api_key)
+    dominant = r["label_dominan"]
+    level = DISTRESS_MAP.get(dominant, "rendah")
+    if r["confidence"] < threshold:
+        level = "rendah"
+    sadness_score = r["semua_skor"].get("sadness", 0)
+    if sadness_score >= sadness_safety_threshold:
+        level = "tinggi"
+    return {
+        "emosi": dominant,
+        "confidence": r["confidence"],
+        "sadness_score": sadness_score,
+        "distress_level": level,
+        "perlu_rujukan": level == "tinggi",
+        "ai_label": r["ai_label"],
+    }
+
+
+TYPING_INDICATOR_HTML = """
+<div class="typing-indicator"><span></span><span></span><span></span></div>
+"""
+
+
+SUPPORT_MESSAGES = {
+    "sadness": [
+        "\U0001f90d Apa pun yang kamu rasakan sekarang itu valid. Kamu gak sendirian di sini.",
+        "\U0001f90d Terima kasih udah mau cerita. Pelan-pelan aja, gak perlu buru-buru.",
+        "\U0001f90d Kamu udah berani sejauh ini dengan cerita di sini. Itu bukan hal kecil.",
+    ],
+    "fear": [
+        "\U0001fac2 Kamu aman untuk cerita di sini, dengan kecepatanmu sendiri.",
+        "\U0001fac2 Gak apa-apa kalau masih takut. Kamu boleh berhenti kapan pun kamu perlu.",
+        "\U0001fac2 Perasaan itu wajar. Kita jalan pelan-pelan aja, sesuai kesiapanmu.",
+    ],
+}
+
+def get_support_banner(emotion_label: str):
+    pool = SUPPORT_MESSAGES.get(emotion_label)
+    return random.choice(pool) if pool else None
+# ===================== TEMA — sesuai referensi gambar =====================
+T = dict(
+    navy="#0E1B48", mauve="#C18DB4", blush="#E2CAD8", skyblue="#87A7D0",
+    slate="#27425D", deep="#0E1F2F",
+    sidebar_top="#FDE8D3", sidebar_bottom="#F5D7DB", active="#F1916D",
+    bot_bg="#F0C987", bot_border="#F59E51", bot_text="#3B153A",
+    user_bg="#0E1B48", user_border="#87A7D0", user_text="#FFFFFF",
+    header_title="#F0C987", header_sub="#E6E6E6",
+    appbg="linear-gradient(135deg, rgba(14,27,72,0.30) 0%, rgba(193,141,180,0.30) 25%, rgba(226,202,216,0.30) 50%, rgba(135,167,208,0.30) 75%, rgba(39,66,93,0.30) 100%), #0E1F2F",
+)
+
 # Logo pakai SVG (bentuk hands+heart sesuai referensi).
 LOGO_SVG = """<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M12 8.6c-1-1.7-2.7-2.6-4.4-2.1C5.6 7 4.6 8.9 5.2 10.7c.6 2 3 4.1 6.8 6.9 3.8-2.8 6.2-4.9 6.8-6.9.6-1.8-.4-3.7-2.4-4.2-1.7-.5-3.4.4-4.4 2.1Z"
@@ -667,6 +794,29 @@ def inject_css(t):
         .sidebar-brand-title {{ font-size: 17px !important; }}
         .sidebar-brand-sub {{ font-size: 11px !important; }}
     }}
+
+    /* ============ TYPING INDICATOR — animasi "sedang mengetik" ============ */
+    .typing-indicator {{
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 6px 2px;
+    }}
+    .typing-indicator span {{
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background-color: {t['bot_text']};
+        opacity: 0.35;
+        animation: typing-bounce 1.1s infinite ease-in-out;
+    }}
+    .typing-indicator span:nth-child(1) {{ animation-delay: 0s; }}
+    .typing-indicator span:nth-child(2) {{ animation-delay: 0.15s; }}
+    .typing-indicator span:nth-child(3) {{ animation-delay: 0.3s; }}
+    @keyframes typing-bounce {{
+        0%, 60%, 100% {{ transform: translateY(0); opacity: 0.35; }}
+        30% {{ transform: translateY(-6px); opacity: 1; }}
+    }}
     </style>""", unsafe_allow_html=True)
 
 FITUR = [
@@ -693,6 +843,9 @@ MENU_LABELS = {"konseling": "Konseling", "pasal": "Telusur Pasal", "lapor": "Pan
 
 THRESHOLD = 0.5
 def retrieve(query, k=4, th=THRESHOLD):
+    embed_model = load_embed()
+    index, chunks = load_store()
+
     m = re.search(r"pasal\s+(\d{1,3})\b", query, re.IGNORECASE)
     exact_ctx = []
     if m:
@@ -707,148 +860,7 @@ def retrieve(query, k=4, th=THRESHOLD):
     ctx = exact_ctx + [c for c in sem_ctx if c not in exact_ctx]
     sim = 1.0 if exact_ctx else float(D[0][0])
     return ctx, sim
-@st.cache_resource
-def load_embed(): return SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-@st.cache_resource
-def load_store():
-    return faiss.read_index("faiss_index.index"), pickle.load(open("chunks.pkl","rb"))
-embed_model = load_embed()
-index, chunks = load_store()
 
-def detect_emotion(text: str, api_key: str) -> dict:
-    labels = ["sadness", "fear", "anger", "happy", "love"]
-    default_scores = {l: 0.0 for l in labels}
-    if not api_key:
-        return {"label_dominan": "sadness", "confidence": 0.0, "semua_skor": default_scores}
-    system_prompt = (
-        "Kamu adalah pengklasifikasi emosi teks Bahasa Indonesia. "
-        "Klasifikasikan pesan user ke salah satu dari 5 emosi berikut: "
-        "sadness, fear, anger, happy, love. "
-        "Balas HANYA dengan JSON valid tanpa teks/markdown lain, format persis:\n"
-        '{"sadness": 0.0, "fear": 0.0, "anger": 0.0, "happy": 0.0, "love": 0.0}\n'
-        "Nilai tiap key adalah skor keyakinan 0-1, totalnya harus sekitar 1.0."
-    )
-    try:
-        client = Groq(api_key=api_key)
-        completion = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text},
-            ],
-            temperature=0.0,
-            max_tokens=100,
-        )
-        raw = completion.choices[0].message.content.strip()
-        raw = raw.replace("```json", "").replace("```", "").strip()
-        scores = json.loads(raw)
-        scores = {l: float(scores.get(l, 0.0)) for l in labels}
-        dominant = max(scores, key=scores.get)
-        return {"label_dominan": dominant, "confidence": scores[dominant], "semua_skor": scores}
-    except Exception:
-        return {"label_dominan": "sadness", "confidence": 0.0, "semua_skor": default_scores}
-
-
-DISTRESS_MAP = {
-    "sadness": "tinggi",
-    "fear": "tinggi",
-    "anger": "sedang",
-    "happy": "rendah",
-    "love": "rendah",
-}
-
-def get_support_flag(text: str, api_key: str, threshold: float = 0.5, sadness_safety_threshold: float = 0.30) -> dict:
-    r = detect_emotion(text, api_key)
-    dominant = r["label_dominan"]
-    level = DISTRESS_MAP.get(dominant, "rendah")
-    if r["confidence"] < threshold:
-        level = "rendah"
-    sadness_score = r["semua_skor"].get("sadness", 0)
-    if sadness_score >= sadness_safety_threshold:
-        level = "tinggi"
-    return {
-        "emosi": dominant,
-        "confidence": r["confidence"],
-        "sadness_score": sadness_score,
-        "distress_level": level,
-        "perlu_rujukan": level == "tinggi",
-    }
-def generate_ai_support_label(api_key, emotion: str, user_text: str) -> str:
-    if not api_key:
-        return "Siap membantu dan mendengarkan ceritamu."
-
-    # Arahan spesifik berdasarkan emosi yang terdeteksi
-    instruction_map = {
-        "sadness": "berikan 1 kalimat penguat yang sangat lembut, tunjukkan empati mendalam dan bahwa kamu ada untuknya.",
-        "fear": "berikan 1 kalimat yang menenangkan kekhawatirannya, berikan kepastian bahwa dia aman bercerita di sini.",
-        "anger": "berikan 1 kalimat validasi yang adem untuk menurunkan tensi emosinya tanpa menghakimi kekesalannya.",
-        "happy": "berikan 1 kalimat ikut senang, antusias, dan mengapresiasi kabar baik atau energi positifnya.",
-        "love": "berikan 1 kalimat apresiasi yang hangat atas kasih sayang atau cerita indahnya."
-    }
-
-    context_instruction = instruction_map.get(emotion, "berikan 1 kalimat respons yang hangat dan suportif.")
-
-    system_prompt = (
-        f"Kamu adalah konselor psikologis yang sangat empatik dan peka. "
-        f"User baru saja bercerita dan sistem mendeteksi emosinya adalah '{emotion}'. "
-        f"Berdasarkan potongan pesannya, {context_instruction}\n\n"
-        "ATURAN MUTLAK:\n"
-        "- HANYA hasilkan 1 kalimat pendek saja (maksimal 12-15 kata).\n"
-        "- Gunakan bahasa Indonesia santai/kasual yang sangat natural seperti teman dekat (jangan kaku/formal).\n"
-        "- DILARANG memakai tanda kutip atau kalimat pengantar seperti 'Ini kalimatnya:'."
-    )
-
-    try:
-        client = Groq(api_key=api_key)
-        # Gunakan model 8B agar super cepat (low latency)
-        completion = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Pesan user: {user_text}"}
-            ],
-            temperature=0.85,
-            max_tokens=50
-        )
-        return completion.choices[0].message.content.strip()
-    except Exception:
-        # Fallback (cadangan) jika API Groq mendadak error/limit
-        fallback = {
-            "sadness": "Aku di sini mendengarkanmu. Ceritakan saja semuanya, ya.",
-            "fear": "Kamu aman di sini. Tarik napas dalam-dalam, kita lalui bersama.",
-            "anger": "Wajar kok kalau kamu kesal. Yuk, rehat sejenak dan tenangin pikiran.",
-            "happy": "Ikut senang mendengarnya! Cerita seru apa lagi nih?",
-            "love": "Terima kasih ya sudah berbagi energi positif. Kamu berharga!"
-        }
-        return fallback.get(emotion, "Siap membantu")
-
-
-SUPPORT_MESSAGES = {
-    "sadness": [
-        "\U0001f90d Apa pun yang kamu rasakan sekarang itu valid. Kamu gak sendirian di sini.",
-        "\U0001f90d Terima kasih udah mau cerita. Pelan-pelan aja, gak perlu buru-buru.",
-        "\U0001f90d Kamu udah berani sejauh ini dengan cerita di sini. Itu bukan hal kecil.",
-    ],
-    "fear": [
-        "\U0001fac2 Kamu aman untuk cerita di sini, dengan kecepatanmu sendiri.",
-        "\U0001fac2 Gak apa-apa kalau masih takut. Kamu boleh berhenti kapan pun kamu perlu.",
-        "\U0001fac2 Perasaan itu wajar. Kita jalan pelan-pelan aja, sesuai kesiapanmu.",
-    ],
-}
-
-def get_support_banner(emotion_label: str):
-    pool = SUPPORT_MESSAGES.get(emotion_label)
-    return random.choice(pool) if pool else None
-# ===================== TEMA — sesuai referensi gambar =====================
-T = dict(
-    navy="#0E1B48", mauve="#C18DB4", blush="#E2CAD8", skyblue="#87A7D0",
-    slate="#27425D", deep="#0E1F2F",
-    sidebar_top="#FDE8D3", sidebar_bottom="#F5D7DB", active="#F1916D",
-    bot_bg="#F0C987", bot_border="#F59E51", bot_text="#3B153A",
-    user_bg="#0E1B48", user_border="#87A7D0", user_text="#FFFFFF",
-    header_title="#F0C987", header_sub="#E6E6E6",
-    appbg="linear-gradient(135deg, rgba(14,27,72,0.30) 0%, rgba(193,141,180,0.30) 25%, rgba(226,202,216,0.30) 50%, rgba(135,167,208,0.30) 75%, rgba(39,66,93,0.30) 100%), #0E1F2F",
-)
 BASE = """Kamu adalah "Pasal", asisten hukum berbahasa Indonesia yang HANYA membahas
 UU No. 12 Tahun 2022 tentang Tindak Pidana Kekerasan Seksual (UU TPKS).
 
@@ -951,7 +963,7 @@ def groq_answer(api_key, user_input, history, mode, support_info):
 
     user_msg = f"PERTANYAAN PENGGUNA:\n{user_input}\n\nKONTEKS PASAL UU TPKS (relevansi {sim:.0%}):\n{context}"
     msgs = [{"role": "system", "content": system_prompt}]
-    for h in history[-6:]:
+    for h in history[-2:]:
         msgs.append({"role": h["role"], "content": h["content"]})
     msgs.append({"role": "user", "content": user_msg})
 
@@ -1336,20 +1348,22 @@ if user_input:
     with st.chat_message("user", avatar="👤"):
         st.markdown(user_input)
 
-    # 1. Deteksi emosi dasar dari model lokal
-    support_info = get_support_flag(user_input, api_key)
-
-    # 2. Panggil AI untuk membuat kalimat support dinamis yang unik
-    ai_dynamic_label = generate_ai_support_label(api_key, support_info["emosi"], user_input)
-
-    # 3. Simpan hasilnya ke session state (termasuk kalimat dari AI tadi)
-    st.session_state["last_emotion_result"] = {
-        "label_dominan": support_info["emosi"],
-        "confidence": support_info["confidence"],
-        "ai_label": ai_dynamic_label
-    }
-
     with st.chat_message("assistant", avatar="\U0001f49b"):
+        typing_ph = st.empty()
+        typing_ph.markdown(TYPING_INDICATOR_HTML, unsafe_allow_html=True)
+
+        # 1. Deteksi emosi + kalimat support dinamis sekaligus (1 Groq call)
+        support_info = get_support_flag(user_input, api_key)
+
+        # 2. Simpan hasilnya ke session state
+        st.session_state["last_emotion_result"] = {
+            "label_dominan": support_info["emosi"],
+            "confidence": support_info["confidence"],
+            "ai_label": support_info["ai_label"]
+        }
+
+        typing_ph.empty()
+
         banner_text = None
         if support_info["perlu_rujukan"]:
             banner_text = get_support_banner(support_info["emosi"])
