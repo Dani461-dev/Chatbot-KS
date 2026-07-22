@@ -732,6 +732,85 @@ def inject_css(t):
         color: {t['navy']};
         line-height: 1.6;
     }}
+
+    /* ============================================================ */
+    /* RESPONSIVE MOBILE — layar sempit (hp/tablet portrait)         */
+    /* ============================================================ */
+    @media (max-width: 640px) {{
+        .block-container {{
+            padding-left: 12px !important;
+            padding-right: 12px !important;
+            padding-top: 0.8rem !important;
+        }}
+        .glass-panel {{
+            padding: 14px 12px 6px !important;
+            border-radius: 18px !important;
+        }}
+        /* Header utama — kecilkan logo & judul */
+        .main-chat-header {{ margin: 2px 0 12px; }}
+        .main-chat-header .logo-badge {{
+            width: 44px !important; height: 44px !important; margin-bottom: 8px !important;
+        }}
+        .main-chat-header .logo-badge svg {{ width: 22px !important; height: 22px !important; }}
+        .main-chat-header .title {{ font-size: 22px !important; }}
+        .main-chat-header .subtitle {{ font-size: 12.5px !important; }}
+        /* Grid 6 fitur — 2 kolom lebih enak digenggam daripada 3 sempit */
+        .st-key-fitur_grid [data-testid="stHorizontalBlock"] {{
+            flex-wrap: wrap !important;
+        }}
+        .st-key-fitur_grid [data-testid="column"] {{
+            flex: 1 1 46% !important;
+            min-width: 46% !important;
+        }}
+        .st-key-fitur_grid div.stButton > button {{
+            height: 78px !important;
+        }}
+        .st-key-fitur_grid div.stButton > button p {{
+            font-size: 12px !important;
+        }}
+        /* Bubble chat — full width & teks lebih rapat */
+        [data-testid="stChatMessageContent"] {{
+            max-width: 88vw !important;
+            padding: 11px 14px !important;
+        }}
+        [data-testid="stChatMessageContent"] p, [data-testid="stChatMessageContent"] li {{
+            font-size: 13.5px !important;
+        }}
+        /* Chip saran — biar wrap rapi, nggak kepotong */
+        .st-key-chip_row [data-testid="stHorizontalBlock"] {{
+            flex-wrap: wrap !important;
+            gap: 8px !important;
+        }}
+        .st-key-chip_row [data-testid="column"] {{
+            flex: 1 1 100% !important;
+            min-width: 100% !important;
+            width: 100% !important;
+        }}
+        .st-key-chip_row div.stButton > button {{
+            padding: 8px 14px !important;
+            font-size: 12.5px !important;
+        }}
+        /* Tombol darurat — perkecil & pas di layar kecil */
+        div.st-key-panic_component {{
+            top: 8px !important;
+            right: 10px !important;
+            width: 128px !important;
+            height: 38px !important;
+        }}
+        /* Input chat & container bawah — padding lebih hemat */
+        div[data-testid="stBottomBlockContainer"] {{
+            padding-left: 12px !important;
+            padding-right: 12px !important;
+        }}
+        [data-testid="stChatInput"] textarea {{
+            font-size: 16px !important; /* cegah auto-zoom Safari/Chrome iOS saat fokus input */
+        }}
+        /* Sidebar — kecilkan logo & judul brand */
+        .sidebar-logo {{ width: 44px !important; height: 44px !important; }}
+        .sidebar-logo svg {{ width: 22px !important; height: 22px !important; }}
+        .sidebar-brand-title {{ font-size: 17px !important; }}
+        .sidebar-brand-sub {{ font-size: 11px !important; }}
+    }}
     </style>""", unsafe_allow_html=True)
 
 FITUR = [
