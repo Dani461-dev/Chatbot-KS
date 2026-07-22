@@ -1,5 +1,6 @@
 from fpdf import FPDF
 import random
+import json
 import re
 import time, faiss, numpy as np, pickle, os
 import torch.nn.functional as F
@@ -8,7 +9,6 @@ from datetime import datetime
 import streamlit as st
 from streamlit.components.v1 import html as components_html
 from sentence_transformers import SentenceTransformer
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from groq import Groq
 
 st.set_page_config(page_title="Ruang Aman - Konseling Hukum UU TPKS",
@@ -23,49 +23,53 @@ def load_store():
 embed_model = load_embed()
 index, chunks = load_store()
 
-EMOTION_MODEL_REPO = "Chatbot-123/Chatbot-KS"
-@st.cache_resource
-def load_emotion_model():
-    tok = AutoTokenizer.from_pretrained(EMOTION_MODEL_REPO)
-    mdl = AutoModelForSequenceClassification.from_pretrained(EMOTION_MODEL_REPO)
-    mdl.eval()
-    return tok, mdl
 
-def detect_emotion(text: str) -> dict:
-    tokenizer, model = load_emotion_model()
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=64)
-    with torch.no_grad():
-        probs = F.softmax(model(**inputs).logits, dim=-1)[0]
-    id2label_local = model.config.id2label
-    scores = {id2label_local[i]: float(probs[i]) for i in range(len(probs))}
-    dominant = max(scores, key=scores.get)
-    return {"label_dominan": dominant, "confidence": scores[dominant], "semua_skor": scores}
-
-
-DISTRESS_MAP = {
-    "sadness": "tinggi",
-    "fear": "tinggi",
-    "anger": "sedang",
-    "happy": "rendah",
-    "love": "rendah",
-}
-
-def get_support_flag(text: str, threshold: float = 0.5, sadness_safety_threshold: float = 0.30) -> dict:
-    r = detect_emotion(text)
-    dominant = r["label_dominan"]
-    level = DISTRESS_MAP.get(dominant, "rendah")
-    if r["confidence"] < threshold:
-        level = "rendah"
-    sadness_score = r["semua_skor"].get("sadness", 0)
-    if sadness_score >= sadness_safety_threshold:
-        level = "tinggi"
-    return {
-        "emosi": dominant,
-        "confidence": r["confidence"],
-        "sadness_score": sadness_score,
-        "distress_level": level,
-        "perlu_rujukan": level == "tinggi",
-    }
+def analyze_emotion_via_groq(api_key, user_text: str) -> dict:
+    """Menggunakan Groq LLM untuk mendeteksi emosi & membuat pesan penguat dinamis sekaligus."""
+    if not api_key:
+        return {
+            "emosi": "neutral",
+            "perlu_rujukan": False,
+            "ai_label": "Siap membantu dan mendengarkan ceritamu."
+        }
+    
+    system_prompt = (
+        "Kamu adalah sistem pengolah emosi untuk chatbot konseling kekerasan seksual.\n"
+        "Tugasmu menganalisis pesan user dan menghasilkan output JSON MURNI:\n"
+        "{\n"
+        '  "emosi": "sadness" | "fear" | "anger" | "happy" | "love" | "neutral",\n'
+        '  "perlu_rujukan": true | false,\n'
+        '  "ai_label": "1 kalimat penguat yang sangat hangat, lembut, dan natural (maks 12 kata)"\n'
+        "}\n\n"
+        "ATURAN:\n"
+        "- Set 'perlu_rujukan' = true HANYA jika emosi tergolong 'sadness', 'fear', atau kondisi tertekan/distress berat.\n"
+        "- Bahasa pada 'ai_label' harus santai, empati, tanpa tanda kutip."
+    )
+    
+    try:
+        client = Groq(api_key=api_key)
+        completion = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Pesan user: {user_text}"}
+            ],
+            temperature=0.3,
+            max_tokens=150,
+            response_format={"type": "json_object"}
+        )
+        res = json.loads(completion.choices[0].message.content)
+        return {
+            "emosi": res.get("emosi", "neutral"),
+            "perlu_rujukan": res.get("perlu_rujukan", False),
+            "ai_label": res.get("ai_label", "Siap membantu proses konselingmu.")
+        }
+    except Exception:
+        return {
+            "emosi": "neutral",
+            "perlu_rujukan": False,
+            "ai_label": "Aku di sini mendengarkanmu. Ceritakan saja, ya."
+        }
 def generate_ai_support_label(api_key, emotion: str, user_text: str) -> str:
     if not api_key:
         return "Siap membantu dan mendengarkan ceritamu."
@@ -82,7 +86,7 @@ def generate_ai_support_label(api_key, emotion: str, user_text: str) -> str:
     context_instruction = instruction_map.get(emotion, "berikan 1 kalimat respons yang hangat dan suportif.")
 
     system_prompt = (
-        f"Kamu adalah konselor psikologis yang sangat empatik dan peka. "
+        f"Kamu adalah konselor psikologis yang sangat empatik dan peka. 
         f"User baru saja bercerita dan sistem mendeteksi emosinya adalah '{emotion}'. "
         f"Berdasarkan potongan pesannya, {context_instruction}\n\n"
         "ATURAN MUTLAK:\n"
@@ -1125,7 +1129,7 @@ with st.sidebar:
         last = st.session_state.get("last_emotion_result")
 
         emoji_map = {"sadness": "🫂", "fear": "🏡", "anger": "🍃", "happy": "🥰", "love": "💖"}
-        current_emoji = emoji_map.get(last["label_dominan"], "💬") if last else "💬"
+        current_emoji = emoji_map.get(last["emosi"], "💬") if last else "💬"
 
         current_label = last["ai_label"] if last else "Siap membantu proses konselingmu."
 
@@ -1248,17 +1252,11 @@ if user_input:
         st.markdown(user_input)
 
     # 1. Deteksi emosi dasar dari model lokal
-    support_info = get_support_flag(user_input)
+    support_info = analyze_emotion_via_groq(api_key, user_input)
 
-    # 2. Panggil AI untuk membuat kalimat support dinamis yang unik
-    ai_dynamic_label = generate_ai_support_label(api_key, support_info["emosi"], user_input)
 
     # 3. Simpan hasilnya ke session state (termasuk kalimat dari AI tadi)
-    st.session_state["last_emotion_result"] = {
-        "label_dominan": support_info["emosi"],
-        "confidence": support_info["confidence"],
-        "ai_label": ai_dynamic_label
-    }
+    st.session_state["last_emotion_result"] = support_info
 
     with st.chat_message("assistant", avatar="\U0001f49b"):
         banner_text = None
