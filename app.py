@@ -1233,7 +1233,7 @@ if user_input:
             st.markdown(f'<div class="support-banner">{banner_text}</div>', unsafe_allow_html=True)
 
         if not api_key:
-            ans = "\u26a0\ufe0f Groq API Key belum ada. Set Secret **GROQ_API_KEY** di Colab.\n\nDarurat? **SAPA 129**."
+            ans = "⚠️ Groq API Key belum ada. Set Variable **GROQ_API_KEY** di dashboard Railway.\n\nDarurat? **SAPA 129**."
             st.markdown(ans)
         else:
             try:
