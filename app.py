@@ -282,39 +282,39 @@ def inject_css(t):
     }}
 
     /* ================= RESPONSIVE MOBILE (< 768px) ================= */
-    @media (max-width: 768px) {
-        .block-container {
+    @media (max-width: 768px) {{
+        .block-container {{
             padding-left: 1rem !important;
             padding-right: 1rem !important;
             padding-top: 1.5rem !important;
-        }
-        .st-key-fitur_grid [data-testid="column"] {
+        }}
+        .st-key-fitur_grid [data-testid="column"] {{
             width: 100% !important;
             flex: 1 1 100% !important;
             margin-bottom: 8px !important;
-        }
-        .st-key-fitur_grid div.stButton > button {
+        }}
+        .st-key-fitur_grid div.stButton > button {{
             height: auto !important;
             min-height: 70px !important;
             padding: 12px 14px !important;
-        }
-        div.st-key-panic_component {
+        }}
+        div.st-key-panic_component {{
             top: 8px !important;
             right: 10px !important;
             width: 135px !important;
             height: 40px !important;
-        }
-        [data-testid="stChatMessageContent"] {
+        }}
+        [data-testid="stChatMessageContent"] {{
             max-width: 88% !important;
             padding: 10px 14px !important;
-        }
-        .main-chat-header .title {
+        }}
+        .main-chat-header .title {{
             font-size: 24px !important;
-        }
-        .main-chat-header .subtitle {
+        }}
+        .main-chat-header .subtitle {{
             font-size: 13px !important;
-        }
-    }
+        }}
+    }}
     </style>""", unsafe_allow_html=True)
 
 FITUR = [
