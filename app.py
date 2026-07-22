@@ -7,7 +7,6 @@ import torch
 from datetime import datetime
 import streamlit as st
 from streamlit.components.v1 import html as components_html
-from google import genai as google_genai
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from groq import Groq
