@@ -1,14 +1,12 @@
 from fpdf import FPDF
 import random
-import json
 import re
 import time, faiss, numpy as np, pickle, os
-import torch.nn.functional as F
-import torch
 from datetime import datetime
 import streamlit as st
 from streamlit.components.v1 import html as components_html
 from sentence_transformers import SentenceTransformer
+import json
 from groq import Groq
 
 st.set_page_config(page_title="Ruang Aman - Konseling Hukum UU TPKS",
@@ -23,53 +21,64 @@ def load_store():
 embed_model = load_embed()
 index, chunks = load_store()
 
-
-def analyze_emotion_via_groq(api_key, user_text: str) -> dict:
-    """Menggunakan Groq LLM untuk mendeteksi emosi & membuat pesan penguat dinamis sekaligus."""
+def detect_emotion(text: str, api_key: str) -> dict:
+    labels = ["sadness", "fear", "anger", "happy", "love"]
+    default_scores = {l: 0.0 for l in labels}
     if not api_key:
-        return {
-            "emosi": "neutral",
-            "perlu_rujukan": False,
-            "ai_label": "Siap membantu dan mendengarkan ceritamu."
-        }
-    
+        return {"label_dominan": "sadness", "confidence": 0.0, "semua_skor": default_scores}
     system_prompt = (
-        "Kamu adalah sistem pengolah emosi untuk chatbot konseling kekerasan seksual.\n"
-        "Tugasmu menganalisis pesan user dan menghasilkan output JSON MURNI:\n"
-        "{\n"
-        '  "emosi": "sadness" | "fear" | "anger" | "happy" | "love" | "neutral",\n'
-        '  "perlu_rujukan": true | false,\n'
-        '  "ai_label": "1 kalimat penguat yang sangat hangat, lembut, dan natural (maks 12 kata)"\n'
-        "}\n\n"
-        "ATURAN:\n"
-        "- Set 'perlu_rujukan' = true HANYA jika emosi tergolong 'sadness', 'fear', atau kondisi tertekan/distress berat.\n"
-        "- Bahasa pada 'ai_label' harus santai, empati, tanpa tanda kutip."
+        "Kamu adalah pengklasifikasi emosi teks Bahasa Indonesia. "
+        "Klasifikasikan pesan user ke salah satu dari 5 emosi berikut: "
+        "sadness, fear, anger, happy, love. "
+        "Balas HANYA dengan JSON valid tanpa teks/markdown lain, format persis:\n"
+        '{"sadness": 0.0, "fear": 0.0, "anger": 0.0, "happy": 0.0, "love": 0.0}\n'
+        "Nilai tiap key adalah skor keyakinan 0-1, totalnya harus sekitar 1.0."
     )
-    
     try:
         client = Groq(api_key=api_key)
         completion = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Pesan user: {user_text}"}
+                {"role": "user", "content": text},
             ],
-            temperature=0.3,
-            max_tokens=150,
-            response_format={"type": "json_object"}
+            temperature=0.0,
+            max_tokens=100,
         )
-        res = json.loads(completion.choices[0].message.content)
-        return {
-            "emosi": res.get("emosi", "neutral"),
-            "perlu_rujukan": res.get("perlu_rujukan", False),
-            "ai_label": res.get("ai_label", "Siap membantu proses konselingmu.")
-        }
+        raw = completion.choices[0].message.content.strip()
+        raw = raw.replace("```json", "").replace("```", "").strip()
+        scores = json.loads(raw)
+        scores = {l: float(scores.get(l, 0.0)) for l in labels}
+        dominant = max(scores, key=scores.get)
+        return {"label_dominan": dominant, "confidence": scores[dominant], "semua_skor": scores}
     except Exception:
-        return {
-            "emosi": "neutral",
-            "perlu_rujukan": False,
-            "ai_label": "Aku di sini mendengarkanmu. Ceritakan saja, ya."
-        }
+        return {"label_dominan": "sadness", "confidence": 0.0, "semua_skor": default_scores}
+
+
+DISTRESS_MAP = {
+    "sadness": "tinggi",
+    "fear": "tinggi",
+    "anger": "sedang",
+    "happy": "rendah",
+    "love": "rendah",
+}
+
+def get_support_flag(text: str, api_key: str, threshold: float = 0.5, sadness_safety_threshold: float = 0.30) -> dict:
+    r = detect_emotion(text, api_key)
+    dominant = r["label_dominan"]
+    level = DISTRESS_MAP.get(dominant, "rendah")
+    if r["confidence"] < threshold:
+        level = "rendah"
+    sadness_score = r["semua_skor"].get("sadness", 0)
+    if sadness_score >= sadness_safety_threshold:
+        level = "tinggi"
+    return {
+        "emosi": dominant,
+        "confidence": r["confidence"],
+        "sadness_score": sadness_score,
+        "distress_level": level,
+        "perlu_rujukan": level == "tinggi",
+    }
 def generate_ai_support_label(api_key, emotion: str, user_text: str) -> str:
     if not api_key:
         return "Siap membantu dan mendengarkan ceritamu."
@@ -86,7 +95,7 @@ def generate_ai_support_label(api_key, emotion: str, user_text: str) -> str:
     context_instruction = instruction_map.get(emotion, "berikan 1 kalimat respons yang hangat dan suportif.")
 
     system_prompt = (
-        f"Kamu adalah konselor psikologis yang sangat empatik dan peka. 
+        f"Kamu adalah konselor psikologis yang sangat empatik dan peka. "
         f"User baru saja bercerita dan sistem mendeteksi emosinya adalah '{emotion}'. "
         f"Berdasarkan potongan pesannya, {context_instruction}\n\n"
         "ATURAN MUTLAK:\n"
@@ -1129,7 +1138,7 @@ with st.sidebar:
         last = st.session_state.get("last_emotion_result")
 
         emoji_map = {"sadness": "🫂", "fear": "🏡", "anger": "🍃", "happy": "🥰", "love": "💖"}
-        current_emoji = emoji_map.get(last["emosi"], "💬") if last else "💬"
+        current_emoji = emoji_map.get(last["label_dominan"], "💬") if last else "💬"
 
         current_label = last["ai_label"] if last else "Siap membantu proses konselingmu."
 
@@ -1252,11 +1261,17 @@ if user_input:
         st.markdown(user_input)
 
     # 1. Deteksi emosi dasar dari model lokal
-    support_info = analyze_emotion_via_groq(api_key, user_input)
+    support_info = get_support_flag(user_input, api_key)
 
+    # 2. Panggil AI untuk membuat kalimat support dinamis yang unik
+    ai_dynamic_label = generate_ai_support_label(api_key, support_info["emosi"], user_input)
 
     # 3. Simpan hasilnya ke session state (termasuk kalimat dari AI tadi)
-    st.session_state["last_emotion_result"] = support_info
+    st.session_state["last_emotion_result"] = {
+        "label_dominan": support_info["emosi"],
+        "confidence": support_info["confidence"],
+        "ai_label": ai_dynamic_label
+    }
 
     with st.chat_message("assistant", avatar="\U0001f49b"):
         banner_text = None
